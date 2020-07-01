@@ -1,0 +1,526 @@
+---
+title: "Predicting Earnings Manipulation"
+author: "Krishangi, Dhruv"
+date: "6/22/2020"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Analysis for Predicting Earnings Manipulation by Indian Firms.
+
+```{r include=FALSE}
+library("readxl")
+library(ISLR)
+library(ROSE)
+library(DMwR)
+library(unbalanced)
+library(dplyr)
+library(plyr)
+library(ROCR) 
+library(ggplot2)
+library(rpart.plot)
+library(rpart)
+library(AUC)
+library(ggthemes)
+library(tidyverse)
+library(dlstats)
+library(caret)
+library(randomForest)
+library(adabag)
+library(e1071)
+library(fastAdaboost)
+```
+
+
+```{r include=FALSE}
+Manipulator <- read_excel("CaseData.xlsx", sheet = 2)
+NonManipulator <- read_excel("CaseData.xlsx", sheet = 3)
+Complete.data <- read_excel("CaseData.xlsx", sheet = 4)
+Sample.data <- read_excel("CaseData.xlsx", sheet = 5)
+```
+
+
+```{r}
+#summary(Sample.data)
+str(Sample.data)
+```
+
+
+## Converting our target variable into factor. Making data ready for analysis.
+```{r include=FALSE}
+Sample.data$Manipulator<-as.factor(Sample.data$Manipulator)
+Sample.data$`C-MANIPULATOR`<-as.factor(Sample.data$`C-MANIPULATOR`)
+Sample.data<-Sample.data[,-c(1,10)]
+colnames(Sample.data)[9]<-"Mani"
+```
+
+
+```{r}
+table(Sample.data$Mani)
+```
+## The data is unbalanced since there is an unequal distribution of data amongst the two classes. 
+
+
+## Sampling the Sample.data dataset into train and test data.
+```{r}
+set.seed(123)
+index<-sample(2, nrow(Sample.data), replace=TRUE,prob=c(0.7,0.3))
+train<-Sample.data[index==1,]
+test<-Sample.data[index==2,]
+```
+
+
+```{r}
+table(train$Mani)
+```
+## Clearly the data is unbalanced. Since the number of observations for no manipulation(0) is more than that of manipulated observations(1).
+
+
+## Undersampling the data for better analysis.
+```{r}
+under<-ovun.sample(Mani~.,data=train , method="under", N=50)$data
+table(under$Mani)
+```
+
+
+## *LOGISTIC REGRESSION MODEL* using stepwise variable selection for *Sample Data*.
+```{r include=FALSE}
+full<-glm(Mani~.,data=under, family=binomial)
+null<-glm(Mani~1,data=under, family=binomial)
+step(null, scope=list(lower=null, upper=full), direction="both",trace=0)
+```
+## Variables selected using stepwise method: DSRI, SGI, AQI, ACCR, GMI
+
+
+```{r}
+logit.model <- glm(Mani~DSRI+SGI+AQI+ACCR+GMI, data=under, family = "binomial")
+summary(logit.model)
+```
+*Equation: y = -14.9907 +4.2540DSRI + 5.7864SGI + 0.9798AQI + 14.0498ACCR + 1.2567GMI*
+
+
+## Predicting our model performance on test data.
+```{r}
+pred_logit.model <- predict(logit.model, test, type = "response")
+pred_logit.model <- round(pred_logit.model)
+pred_logit.model
+#summary(pred_logit.model)
+```
+
+
+## Training set's predicted score.
+```{r}
+ggplot( test, aes( pred_logit.model, color = Mani ) ) + 
+geom_density( size = 1 ) +
+ggtitle( "Training Set's Predicted Score" ) + 
+scale_color_economist( name = "Earnings Manipulation", labels = c( "Non Mani", "Mani" ) ) + 
+theme_economist()
+```
+
+
+## Confusion Matrix
+```{r}
+actual<-test$Mani
+ConfMat <- table(pred_logit.model,actual,dnn=c("Prediction","Actual"))
+ConfMat
+```
+
+
+```{r}
+result <- confusionMatrix(ConfMat)
+result
+```
+
+## Accuracy of the logistic model: *86.67%*
+## Precision of the logistic model: *95.24%*
+
+
+```{r}
+pred <- ROCR::prediction(pred_logit.model,actual) 
+perf <- ROCR::performance(pred, 'tpr', 'fpr') 
+pf <- data.frame(perf@x.values, perf@y.values)  
+names(pf) <- c("fpr", "tpr")  
+ggplot(data=pf,aes(x=fpr,y=tpr))+geom_line(colour='red')+geom_abline(intercept=0,slope=1)+labs(x='False positive rate',y='sensitivity',title='ROC curve')
+#plot(perf)
+```
+
+
+## Calculating area under curve for the ROC plot.
+```{r}
+auc <- performance(pred,"auc")
+auc <- unlist(slot(auc,"y.values"))
+paste("Area under curve: ", auc)
+```
+
+
+## Default cut off is at 0.5
+```{r}
+metrics<-function(model,data,cutoff){
+  data$model_prob<-predict(model,newdata=data, type = "response")
+  data <- data  %>% mutate(model_pred = 1*(model_prob > cutoff) + 0)
+  data <- data %>% mutate(accurate = 1*(model_pred == Mani))
+  confusion<-table(data$Mani,data$model_pred)
+  sens<-confusion[[1]]/sum(confusion[,1])
+  spec<-confusion[[1,2]]/sum(confusion[,2])
+  accuaracy<-sum(data$accurate)/nrow(data)
+  fnr<-confusion[2,1]/sum(confusion[,1])
+  fOr<-confusion[2,1]/sum(confusion[2,])
+  return(list(Dataset = data,
+              Confusin_matrix = confusion,
+              Accuracy = accuaracy,
+              Predicted_Class = data$model_pred,
+              Sensitivity = sens,
+              Specificity = spec,
+              P10 = fnr,
+              P01 = fOr,
+              p1 = confusion[1,2],
+              p2 = confusion[2,1]))
+}
+
+test_data <- metrics(logit.model,test,0.5)$Dataset
+```
+
+
+## Calculating Youden's Index to find best cut-off point.
+```{r}
+roc.plot<-roc.curve(test_data$Mani,test_data$model_pred)
+pred<-prediction(test_data$model_prob,test_data$Mani)
+plot(ROCR::performance(pred,"acc")) #accuracy by cutoff
+cutoffs<-ROCR::performance(pred,"acc")
+sens<-ROCR::performance(pred,"sens")@y.values[[1]]
+spec<-ROCR::performance(pred,"spec")@y.values[[1]]
+max(sens+spec-1) 
+```
+*Youden's Index = 0.7484472*
+
+
+## Now, to find the classification cutoff probability let's plot it and see. 
+```{r}
+plot(cutoffs@x.values[[1]],sens+spec-1) 
+```
+## The best cut off point is approximately *0.6*
+
+
+## *CLASSIFICATION AND REGRESSION TREE MODEL (CART)*
+```{r}
+set.seed(1234)
+tree <- rpart(Mani ~ DSRI + GMI + AQI + SGI + DEPI + SGAI
+              + ACCR + LEVI, data = under,control = rpart.control(c=-1),                
+              parms = list(split = "gini"),cp = 0.001) 
+rpart.plot(tree)
+print(tree)
+summary(tree)
+```
+*Decision Tree Inference*
+## If ACCR is greater than -18e-6 and DEPI > 0.98 then the company has 30% chance of being a Manipulator.
+## If ACCR is less than -18e-6 and DSRI > 1.2 the firm has 22% chance of being a Manipulator.
+
+
+```{r}
+printcp(tree)
+opt <-which.min(tree$cptable[ ,"xerror"])
+cp<-tree$cptable[opt, "CP"]
+cp
+```
+## Complexity parameter is 0.12
+
+## Decision tree after changing the cp value.
+```{r}
+tree.opt <- rpart(Mani~., data = under, control = rpart.control(c=-1),parms = list(split = "gini"), cp = 0.12)
+rpart.plot(tree.opt)
+print(tree.opt)
+```
+
+
+
+```{r}
+result.tree <- confusionMatrix(under$Mani, predict(tree.opt,type="class"))
+result.tree
+```
+## The accuracy of the model is *82%*
+## The precision of the model is *80%*
+
+
+## Predicting performance of CART model on Test Data.
+```{r}
+Pred.cart = predict(tree.opt, newdata = test, type = "prob")[,2] 
+Pred2 = prediction(Pred.cart, test$Mani) 
+plot(performance(Pred2, "tpr", "fpr"))
+abline(0, 1, lty = 2)
+```
+
+
+## Calculating area under curve for the ROC plot.
+```{r}
+auc <- performance(Pred2,"auc")
+auc <- unlist(slot(auc,"y.values"))
+paste("Area under curve: ", auc)
+```
+
+
+## *LOGISTIC REGRESSION* using stepwise variable selection for *Complete Data*. 
+```{r include=FALSE}
+str(Complete.data)
+Complete.data$Manipulater<-as.factor(Complete.data$Manipulater)
+Complete.data$`C-MANIPULATOR`<-as.factor(Complete.data$`C-MANIPULATOR`)
+Complete.data<-Complete.data[,-c(1,10)]
+colnames(Complete.data)[9]<-"Manipulator"
+```
+
+
+```{r}
+set.seed(1234)
+index<-sample(2, nrow(Complete.data), replace=TRUE,prob=c(0.7,0.3))
+train.c<-Complete.data[index==1,]
+test.c<-Complete.data[index==2,]
+table(train.c$Manipulator)
+```
+## Clearly the data is unbalanced again. Since the number of observations for no manipulation(0) is more than that of manipulated observations(1).
+
+
+## Undersampling the data for better analysis.
+```{r}
+under.c<-ovun.sample(Manipulator~.,data=train.c , method="under", N=62)$data
+table(under.c$Manipulator)
+```
+
+
+```{r include=FALSE}
+full<-glm(Manipulator~.,data=under.c, family=binomial)
+null<-glm(Manipulator~1,data=under.c, family=binomial)
+var.c<-step(null, scope=list(lower=null, upper=full), direction="both",trace=0)
+summary(var.c)
+```
+## DSRI, SGI, ACCR, AQI are the significant variables. So we'll use these variables in our logistic regression model.
+
+
+```{r}
+mylogit<-glm(Manipulator~DSRI+SGI+ACCR+AQI,data=under.c, family = "binomial")
+summary(mylogit)
+```
+
+Comparison of the previous logistic model and the new logistic model:
+EQUATIONS OF THE PREVIOUS(y1) AND THE NEW(y2) LOGISTIC MODELS RESPECTIVELY ARE:
+*y1 = -14.9907 +4.2540DSRI + 5.7864SGI + 0.9798AQI + 14.0498ACCR + 1.2567GMI*
+*y2 = -11.3769 + 4.9715DSRI + 3.5622SGI + 11.0802ACCR + 0.5271AQI*
+
+## The old model has more AIC (38.1) compared to the new model(51.514). The new model has only four significant variables whereas the previous model had five significant variables. 
+
+## Predicting performance of new logistic model on Test Data.
+```{r}
+pred_mylogit <- predict(mylogit, test.c, type = "response")
+pred_mylogit <- round(pred_mylogit)
+pred_mylogit
+#summary(pred_mylogit)
+```
+
+
+```{r}
+actual.c <- test.c$Manipulator
+pred.c <- ROCR::prediction(pred_mylogit,actual.c) 
+perf.c <- ROCR::performance(pred.c, 'tpr', 'fpr') 
+pf.c <- data.frame(perf.c@x.values, perf.c@y.values)  
+names(pf.c) <- c("fpr", "tpr")  
+ggplot(data=pf.c,aes(x=fpr,y=tpr))+geom_line(colour='red')+geom_abline(intercept=0,slope=1)+labs(x='False positive rate',y='sensitivity',title='ROC curve')
+#plot(perf.c)
+```
+
+
+## Calculating area under curve for the ROC plot.
+```{r}
+auc.c <- performance(pred.c,"auc")
+auc.c <- unlist(slot(auc.c,"y.values"))
+paste("Area under curve: ", auc.c)
+```
+
+## The *previous model* had an area under curve:  0.863
+## The *new model* has an area under curve: 0.737
+## Thus the previous model is better.
+
+
+```{r}
+ConfMat.c <- table(pred_mylogit,actual.c,dnn=c("Prediction","Actual"))
+ConfMat.c
+```
+
+
+```{r}
+result.c <- confusionMatrix(ConfMat.c)
+result.c
+```
+
+*Previous model* Accuracy = 88.33%, AUC = 0.86, AIC = 38.1
+*New model* Accuracy = 84.38%, AUC = 0.74, AIC = 51.514
+*Clearly the previous logistic regression model is better than the new model*
+
+
+## RANDOM FOREST
+```{r}
+set.seed(123)
+rf = randomForest(Mani~., data = under, ntree=1000,proximity=TRUE, replace=TRUE,sampsize=ceiling(0.65*nrow(under)),importance=TRUE, mtry=sqrt(ncol(under)))
+print(rf)
+```
+
+
+```{r}
+plot(rf)
+legend("topright", legend = colnames(rf$err.rate), cex = 0.5,lty = c(1,2,3), col = c(1,2,3), horiz = T)
+```
+
+
+```{r}
+attributes(rf)
+importance(rf)
+```
+
+
+```{r}
+varImpPlot(rf)
+```
+*Order of importance = ACCR > SGI > SGAI > LEVI> DSRI > GMI > DEPI >AQI*
+
+
+```{r include=FALSE}
+rf$predicted
+rf$votes
+getTree(rf, k=200, labelVar = TRUE)
+```
+
+
+## Confusion Matrix
+```{r}
+maniPred = predict(rf, newdata = test)
+actual.rf <- test$Mani
+ConfMat.rf <- table(maniPred,actual.rf,dnn=c("Prediction","Actual"))
+ConfMat.rf
+```
+
+
+```{r}
+result.rf <- confusionMatrix(ConfMat.rf)
+result.rf
+```
+## Accuracy: *75%*
+## Precision: *89.74%* 
+
+
+```{r}
+prediction_for_roc_curve <- predict(rf,test[,-9],type="prob")
+pretty_colours <- c("#F8766D","#00BA38")
+# Specify the different classes 
+classes <- levels(test$Mani)
+# For each class
+for (i in 1:2)
+{
+ # Define which observations belong to class[i]
+ true_values <- ifelse(test[,9]==classes[i],1,0)
+ # Assess the performance of classifier for class[i]
+ pred <- prediction(prediction_for_roc_curve[,i],true_values)
+ perf <- performance(pred, "tpr", "fpr")
+ if (i==1)
+ {
+     plot(perf,main="ROC Curve",col=pretty_colours[i]) 
+ }
+ else
+ {
+     plot(perf,main="ROC Curve",col=pretty_colours[i],add=TRUE) 
+ }
+ # Calculate the AUC and print to screen
+ auc.perf <- performance(pred, measure = "auc")
+ print(auc.perf@y.values)
+}
+```
+## AUC: *0.825*
+## Accuracy: *75%*
+## Precision: *89.74%* 
+
+
+## ADABOOST
+```{r include=FALSE}
+sub <- c(sample(1:16, 16), sample(17:32, 16), sample(33:50, 18))
+Mani.adaboost <- boosting(Mani ~ ., data=under[sub,], mfinal=3)
+```
+
+
+```{r}
+ada.mod= adaboost(Mani ~ ., data = under, nIter=10)
+```
+
+
+```{r}
+ada.pred<-matrix(predict( ada.mod,newdata=test))
+actual.ada<-test$Mani
+```
+
+
+```{r}
+ConfMat.ada <- table(ada.pred[[3]],actual.ada,dnn=c("Prediction","Actual"))
+ConfMat.ada
+```
+
+
+```{r}
+result.ada <- confusionMatrix(ConfMat.ada)
+result.ada
+```
+## Accuracy: *63.33%*
+## Precision: *83.33%*
+
+
+```{r}
+ada.mod$trees
+ada.mod$weights
+ada.mod$prob
+ada.mod$class
+```
+
+
+```{r}
+importanceplot(Mani.adaboost)
+```
+## Important Variables in the Adaboost model: *SGAI, ACCR, DEPI, SGI*
+
+
+FINAL ANALYSIS:
+                    
+Logistic Regression Model :
+## Accuracy : 86.67%
+## Precision : 95.24%
+## Equation: y = -14.9907 + 4.2540DSRI + 5.7864SGI + 0.9798AQI + 14.0498ACCR + 1.2567GMI
+## Area under curve:  0.863
+## Key predictors: ACCR > SGI > DSRI > GMI > AQI 
+
+
+Decision Tree Model (CART) : 
+## Accuracy : 82%
+## Precision : 80%
+## Area under curve:  0.721
+## Key predictors: ACCR > DSRI > DEPI
+                 
+Random Forest :
+## Accuracy : 75%
+## Precision : 89.74%
+## Area under curve : 0.825
+## Key predictors: SGI > ACCR > LEVI > SGAI > DSRI > GMI > DEPI > AQI
+
+
+ADA boost :
+## Accuracy : 63.33%
+## Precision : 83.33%
+## Key predictors: SGAI > ACCR > DEPI > SGI
+          
+CONCLUSION :  
+*Out of all the models, Logistic regression model is the best model with highest accuracy, precision and AUC(ROC Curve)*
+*For predicting earning manipulators, the following varaibles can be used as predictors : ACCR, SGI, DSRI, DEPI*
+
+
+
+
+
+
+
