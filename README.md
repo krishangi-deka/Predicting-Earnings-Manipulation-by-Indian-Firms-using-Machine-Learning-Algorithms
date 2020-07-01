@@ -12,7 +12,7 @@ The eight financial indices of the Beneish Model have been used to predict earni
 
 ### FINAL ANALYSIS:
                    
-##Logistic Regression Model :
+Logistic Regression Model :
 * Accuracy : 86.67%
 * Precision : 95.24%
 * Equation: y = -14.9907 + 4.2540DSRI + 5.7864SGI + 0.9798AQI + 14.0498ACCR + 1.2567GMI
